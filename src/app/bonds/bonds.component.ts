@@ -1,81 +1,47 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, OnInit, NgZone } from '@angular/core';
 import { NgbModal } from '@ng-bootstrap/ng-bootstrap';
-import { ApolloQueryResult, gql } from '@apollo/client/core';
-import { Apollo } from 'apollo-angular';
+import { request, gql } from 'graphql-request';
 import BigNumber from 'bignumber.js';
 import { ConstantsService } from '../constants.service';
-import { ContractService } from '../contract.service';
+import { ContractService, PoolInfo } from '../contract.service';
 import { HelpersService } from '../helpers.service';
 import { WalletService } from '../wallet.service';
-import { ModalBondDetailsComponent } from './modal-bond-details/modal-bond-details.component';
-import { FunderPool, Deposit, Funding, DPool } from './interface';
-
-const mockFunder = {
-  totalMPHEarned: 123,
-  pools: [{
-    address: '0xb5EE8910A93F8A450E97BE0436F36B9458106682',
-    fundings: [{
-      nftID: 1,
-      recordedFundedDepositAmount: 100,
-      recordedMoneyMarketIncomeIndex: 1,
-      initialFundedDepositAmount: 200,
-      fundedDeficitAmount: 10,
-      totalInterestEarned: 7,
-      mphRewardEarned: 10
-    }]
-  }],
-  totalInterestByPool: [{
-    pool: {
-      stablecoin: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48'
-    },
-    totalDeficitFunded: 100,
-    totalRecordedFundedDepositAmount: 100,
-    totalInterestEarned: 20
-  }]
-};
+import { ModalBuyYieldTokenComponent } from './modal-buy-yield-token/modal-buy-yield-token.component';
+import {
+  FunderPool,
+  Funding,
+  FundedDeposit,
+  FundableDeposit,
+  DPool,
+} from './interface';
+import { ModalWithdrawYieldTokenInterestComponent } from './modal-withdraw-yield-token-interest/modal-withdraw-yield-token-interest.component';
 
 @Component({
   selector: 'app-bonds',
   templateUrl: './bonds.component.html',
-  styleUrls: ['./bonds.component.css']
+  styleUrls: ['./bonds.component.css'],
 })
 export class BondsComponent implements OnInit {
+  funderPools: FunderPool[];
+  totalYieldTokenBalanceUSD: BigNumber;
+  totalDepositEarningYield: BigNumber;
+  totalYieldEarnedUSD: BigNumber;
+  totalMPHEarned: BigNumber;
 
   allPoolList: DPool[];
-  funderPools: FunderPool[];
-  totalMPHEarned: BigNumber;
-  totalDeficitFundedUSD: BigNumber;
-  totalCurrentDepositUSD: BigNumber;
-  totalInterestUSD: BigNumber;
-
-  selectedPool: DPool;
-  floatingRatePrediction: BigNumber;
-  numDepositsToFund: string;
-  numFundableDeposits: number;
-  fundableDeposits: Deposit[];
-  debtToFundToken: BigNumber;
-  debtToFundUSD: BigNumber;
-  amountToEarnOnToken: BigNumber;
-  amountToEarnOnUSD: BigNumber;
-  mphRewardAmount: BigNumber;
-  estimatedProfitToken: BigNumber;
-  estimatedROI: BigNumber;
-  estimatedProfitUSD: BigNumber;
+  fundableDeposits: FundableDeposit[];
   loadingCalculator: boolean;
+  floatingRatePrediction: BigNumber;
   mphPriceUSD: BigNumber;
-  mphROI: BigNumber;
-  averageMaturationTime: BigNumber;
-  medianMaturationTime: BigNumber;
-  depositListIsCollapsed: boolean;
-
+  selectedPool: DPool;
 
   constructor(
     private modalService: NgbModal,
-    private apollo: Apollo,
     public wallet: WalletService,
     public contract: ContractService,
     public helpers: HelpersService,
-    public constants: ConstantsService
+    public constants: ConstantsService,
+    private zone: NgZone
   ) {
     this.resetData(true, true);
   }
@@ -89,183 +55,324 @@ export class BondsComponent implements OnInit {
     this.wallet.disconnectedEvent.subscribe(() => {
       this.resetData(true, false);
     });
+    this.wallet.chainChangedEvent.subscribe((networkID) => {
+      this.zone.run(() => {
+        this.resetData(true, true);
+        this.loadData(true, true);
+      });
+    });
+    this.wallet.accountChangedEvent.subscribe((account) => {
+      this.zone.run(() => {
+        this.resetData(true, false);
+        this.loadData(true, false);
+      });
+    });
+    this.wallet.txConfirmedEvent.subscribe(() => {
+      setTimeout(() => {
+        this.resetData(true, true);
+        this.loadData(true, true);
+      }, this.constants.TX_CONFIRMATION_REFRESH_WAIT_TIME);
+    });
   }
 
   loadData(loadUser: boolean, loadGlobal: boolean): void {
-    //const funderID = this.wallet.connected ? this.wallet.userAddress.toLowerCase() : '';
-    let funderID;
-    if (this.wallet.connected && !this.wallet.watching) {
-      funderID = this.wallet.userAddress.toLowerCase();
-    } else if (this.wallet.watching) {
-      funderID = this.wallet.watchedAddress.toLowerCase();
-    } else {
-      funderID = '';
-    }
+    let funderID = this.wallet.actualAddress.toLowerCase();
     const queryString = gql`
       {
-        ${loadUser ? `funder(id: "${funderID}") {
-          totalMPHEarned
-          pools {
-            id
-            address
-            fundings(where: { funder: "${funderID}", active: true }, orderBy: nftID) {
-              id
-              pool {
-                address
-                oracleInterestRate
-                moneyMarketIncomeIndex
-                mphFunderRewardMultiplier
-              }
-              fromDepositID
-    					toDepositID
-              nftID
-              recordedFundedDepositAmount
-              recordedMoneyMarketIncomeIndex
-              initialFundedDepositAmount
-              fundedDeficitAmount
-              totalInterestEarned
-              mphRewardEarned
-              refundAmount
-              creationTimestamp
-            }
-          }
-          totalInterestByPool {
+        ${
+          loadUser
+            ? `funder(id: "${funderID}") {
+          address
+          fundings (
+            where: {
+              active: true
+              principalPerToken_gt: "${this.constants.DUST_THRESHOLD}"
+             }
+          ) {
+            nftID
+            totalSupply
+            principalPerToken
+            totalRefundEarned
             pool {
-              id
-              stablecoin
+              address
+              poolFunderRewardMultiplier
             }
-            totalDeficitFunded
-            totalRecordedFundedDepositAmount
-            totalInterestEarned
+            deposit {
+              maturationTimestamp
+              interestRate
+              feeRate
+            }
           }
-        }` : ''}
-        ${loadGlobal ? `dpools {
+        }`
+            : ''
+        }
+        ${
+          loadGlobal
+            ? `dpools {
           id
           address
-          surplus
-          unfundedDepositAmount
           oneYearInterestRate
           oracleInterestRate
-          mphFunderRewardMultiplier
-          latestDeposit: deposits(orderBy: nftID, orderDirection: desc, first: 1) {
-            nftID
-          }
-        }` : ''}
+          poolFunderRewardMultiplier
+        }`
+            : ''
+        }
       }
     `;
-    this.apollo.query<QueryResult>({
-      query: queryString
-    }).subscribe((x) => this.handleData(x));
+
+    request(
+      this.constants.GRAPHQL_ENDPOINT[this.wallet.networkID],
+      queryString
+    ).then((data: QueryResult) => this.handleData(data));
 
     this.helpers.getMPHPriceUSD().then((price) => {
       this.mphPriceUSD = price;
     });
   }
 
-  async handleData(queryResult: ApolloQueryResult<QueryResult>) {
-    if (!queryResult.loading) {
-      const funder = queryResult.data.funder;
-      const dpools = queryResult.data.dpools;
-      let stablecoinPriceCache = {};
+  async handleData(data: QueryResult) {
+    const funder = data.funder;
+    const dpools = data.dpools;
+    let stablecoinPriceCache = {};
+    const now = Math.floor(Date.now() / 1e3);
 
-      if (funder) {
-        // update totalMPHEarned
-        this.totalMPHEarned = new BigNumber(funder.totalMPHEarned);
+    if (funder) {
+      const funderPools: FunderPool[] = [];
+      let totalYieldTokenBalanceUSD = new BigNumber(0);
+      let totalDepositEarningYield = new BigNumber(0);
+      let totalYieldEarnedUSD = new BigNumber(0);
+      let totalMPHEarned = new BigNumber(0);
 
-        // process funding list
-        const funderPools: FunderPool[] = [];
-        Promise.all(funder.pools.map(async pool => {
-          if (pool.fundings.length == 0) return;
-          const poolInfo = this.contract.getPoolInfoFromAddress(pool.address);
-          const stablecoin = poolInfo.stablecoin.toLowerCase()
+      Promise.all(
+        funder.fundings.map(async (funding) => {
+          const lens = this.contract.getNamedContract('DInterestLens');
+          const poolInfo = this.contract.getPoolInfoFromAddress(
+            funding.pool.address
+          );
+          const poolContract = this.contract.getContract(
+            funding.pool.address,
+            'DInterest'
+          );
+          const poolFunderRewardMultiplier = new BigNumber(
+            funding.pool.poolFunderRewardMultiplier
+          );
+
+          // get stablecoin price in USD
+          const stablecoin = poolInfo.stablecoin.toLowerCase();
+          const stablecoinPrecision = Math.pow(10, poolInfo.stablecoinDecimals);
           let stablecoinPrice = stablecoinPriceCache[stablecoin];
           if (!stablecoinPrice) {
             stablecoinPrice = await this.helpers.getTokenPriceUSD(stablecoin);
             stablecoinPriceCache[stablecoin] = stablecoinPrice;
           }
-          const fundings: Array<Funding> = [];
-          for (const funding of pool.fundings) {
-            const fundingObj: Funding = {
-              id: funding.id,
-              fromDepositID: funding.fromDepositID,
-              toDepositID: funding.toDepositID,
-              pool: {
-                address: funding.pool.address,
-                oracleInterestRate: new BigNumber(funding.pool.oracleInterestRate).times(this.constants.YEAR_IN_SEC).times(100),
-                moneyMarketIncomeIndex: new BigNumber(funding.pool.moneyMarketIncomeIndex),
-                mphFunderRewardMultiplier: new BigNumber(funding.pool.mphFunderRewardMultiplier)
-              },
-              nftID: funding.nftID,
-              deficitToken: new BigNumber(funding.fundedDeficitAmount),
-              deficitUSD: new BigNumber(funding.fundedDeficitAmount).times(stablecoinPrice),
-              currentDepositToken: new BigNumber(funding.recordedFundedDepositAmount),
-              currentDepositUSD: new BigNumber(funding.recordedFundedDepositAmount).times(stablecoinPrice),
-              interestEarnedToken: new BigNumber(funding.totalInterestEarned),
-              interestEarnedUSD: new BigNumber(funding.totalInterestEarned).times(stablecoinPrice),
-              mphRewardEarned: new BigNumber(funding.mphRewardEarned),
-              refundAmountToken: new BigNumber(funding.refundAmount),
-              refundAmountUSD: new BigNumber(funding.refundAmount).times(stablecoinPrice),
-              recordedMoneyMarketIncomeIndex: new BigNumber(funding.recordedMoneyMarketIncomeIndex),
-              creationTimestamp: +funding.creationTimestamp
-            }
-            fundings.push(fundingObj)
+
+          let yieldToken;
+          await poolContract.methods
+            .fundingMultitoken()
+            .call()
+            .then((yieldTokenAddress) => {
+              yieldToken = this.contract.getContract(
+                yieldTokenAddress,
+                'FundingMultitoken'
+              );
+            });
+
+          const yieldTokenBalance = new BigNumber(
+            await yieldToken.methods
+              .balanceOf(funder.address, funding.nftID)
+              .call()
+          ).div(stablecoinPrecision);
+
+          const yieldTokenPercentage = yieldTokenBalance.div(
+            funding.totalSupply
+          );
+          const maturity = new BigNumber(funding.deposit.maturationTimestamp);
+
+          // calculate amount of deposit earning yield
+          const earnYieldOn = yieldTokenBalance.times(
+            funding.principalPerToken
+          );
+
+          // calculate USD value of yield tokens
+          const interestRate = new BigNumber(funding.deposit.interestRate);
+          const feeRate = new BigNumber(funding.deposit.feeRate);
+          const fundedDepositAmount = earnYieldOn.div(
+            interestRate.plus(feeRate).plus(1)
+          );
+          const yieldTokenBalanceUSD = earnYieldOn
+            .minus(fundedDepositAmount)
+            .times(stablecoinPrice);
+
+          // calculate amount of yield earned
+          let yieldEarned = new BigNumber(0);
+
+          // some will have been accrued, which is equally split among yield token holders
+          let funderAccruedInterest;
+          await lens.methods
+            .accruedInterestOfFunding(funding.pool.address, funding.nftID)
+            .call()
+            .then((result) => {
+              const fundingTotalAccruedInterest = new BigNumber(result).div(
+                stablecoinPrecision
+              );
+              funderAccruedInterest =
+                fundingTotalAccruedInterest.times(yieldTokenPercentage);
+              yieldEarned = yieldEarned.plus(funderAccruedInterest);
+            });
+
+          // some will have been paid out already
+          // @dev this value will potentially include the refund amount
+          await yieldToken.methods
+            .accumulativeDividendOf(funding.nftID, stablecoin, funder.address)
+            .call()
+            .then((result) => {
+              const funderDistributedInterest = new BigNumber(result).div(
+                stablecoinPrecision
+              );
+              yieldEarned = yieldEarned.plus(funderDistributedInterest);
+            });
+
+          // calculate the amount that has been refunded
+          // @dev this is an extremely rough implementation. update the subgraph to track refunds for specific users to get a more accurate estimation
+          let refundedAmount = new BigNumber(0);
+          refundedAmount = refundedAmount.plus(
+            new BigNumber(funding.totalRefundEarned).times(yieldTokenPercentage)
+          );
+          yieldEarned = yieldEarned.minus(refundedAmount);
+
+          // calculate the amount of mph earned
+          // @dev this only accounts for already distributed MPH, does not estimate MPH rewards based on interest earned to date
+          let mphEarned = new BigNumber(0);
+          await yieldToken.methods
+            .accumulativeDividendOf(
+              funding.nftID,
+              this.constants.MPH_ADDRESS[this.wallet.networkID],
+              funder.address
+            )
+            .call()
+            .then((result) => {
+              const funderDistributedMPH = new BigNumber(result).div(
+                this.constants.PRECISION
+              );
+              mphEarned = mphEarned.plus(funderDistributedMPH);
+            });
+
+          let pool: FunderPool = funderPools.find(
+            (pool) =>
+              pool.poolInfo.address.toLowerCase() ===
+              funding.pool.address.toLowerCase()
+          );
+
+          // if no funderPool exists, create one
+          if (pool === undefined) {
+            const funderPool: FunderPool = {
+              poolInfo: poolInfo,
+              fundings: [],
+              userTotalYieldTokenBalance: new BigNumber(0),
+              userTotalYieldTokenBalanceUSD: new BigNumber(0),
+              userTotalEarnYieldOn: new BigNumber(0),
+              userTotalEarnYieldOnUSD: new BigNumber(0),
+              userTotalYieldEarned: new BigNumber(0),
+              userTotalYieldEarnedUSD: new BigNumber(0),
+              userTotalRefundedAmount: new BigNumber(0),
+              userTotalRefundedAmountUSD: new BigNumber(0),
+              userTotalMPHRewardsEarned: new BigNumber(0),
+              userTotalMPHRewardsEarnedUSD: new BigNumber(0),
+            };
+            funderPools.push(funderPool);
+            pool = funderPool;
           }
 
-          const funderPool: FunderPool = {
-            poolInfo: poolInfo,
-            fundings: fundings
+          // add the funding to the funderPool
+          const fundingObj: FundedDeposit = {
+            yieldToken: yieldToken,
+            fundingID: +funding.nftID,
+            stablecoinPrice: stablecoinPrice,
+            funderAccruedInterest: funderAccruedInterest,
+            maturationTimestamp: +funding.deposit.maturationTimestamp,
+            yieldTokenBalance: yieldTokenBalance,
+            yieldTokenBalanceUSD: yieldTokenBalanceUSD,
+            earnYieldOn: earnYieldOn,
+            earnYieldOnUSD: earnYieldOn.times(stablecoinPrice),
+            yieldEarned: yieldEarned,
+            yieldEarnedUSD: yieldEarned.times(stablecoinPrice),
+            refundedAmount: refundedAmount,
+            refundedAmountUSD: refundedAmount.times(stablecoinPrice),
+            mphRewardsEarned: mphEarned,
+            mphRewardsEarnedUSD: mphEarned.times(this.mphPriceUSD),
           };
-          funderPools.push(funderPool);
-        })).then(() => {
-          this.funderPools = funderPools;
-        });
+          pool.fundings.push(fundingObj);
 
-        // compute overall statistics
-        let totalDeficitFundedUSD = new BigNumber(0);
-        let totalCurrentDepositUSD = new BigNumber(0);
-        let totalInterestUSD = new BigNumber(0);
-        Promise.all(funder.totalInterestByPool.map(async totalInterestEntity => {
-          let stablecoinPrice = stablecoinPriceCache[totalInterestEntity.pool.stablecoin];
-          if (!stablecoinPrice) {
-            stablecoinPrice = await this.helpers.getTokenPriceUSD(totalInterestEntity.pool.stablecoin);
-            stablecoinPriceCache[totalInterestEntity.pool.stablecoin] = stablecoinPrice;
-          }
+          // sort active positions by maturation timestamp
+          pool.fundings.sort((a, b) => {
+            return a.maturationTimestamp - b.maturationTimestamp;
+          });
 
-          const poolDeficitFundedUSD = new BigNumber(totalInterestEntity.totalDeficitFunded).times(stablecoinPrice);
-          const poolCurrentDepositUSD = new BigNumber(totalInterestEntity.totalRecordedFundedDepositAmount).times(stablecoinPrice);
-          const poolInterestUSD = new BigNumber(totalInterestEntity.totalInterestEarned).times(stablecoinPrice);
-          totalDeficitFundedUSD = totalDeficitFundedUSD.plus(poolDeficitFundedUSD);
-          totalCurrentDepositUSD = totalCurrentDepositUSD.plus(poolCurrentDepositUSD);
-          totalInterestUSD = totalInterestUSD.plus(poolInterestUSD);
-        })).then(() => {
-          this.totalDeficitFundedUSD = totalDeficitFundedUSD;
-          this.totalCurrentDepositUSD = totalCurrentDepositUSD;
-          this.totalInterestUSD = totalInterestUSD;
-        });
-      }
+          // update user pool totals
+          pool.userTotalYieldTokenBalance =
+            pool.userTotalYieldTokenBalance.plus(yieldTokenBalance);
+          pool.userTotalYieldTokenBalanceUSD =
+            pool.userTotalYieldTokenBalanceUSD.plus(yieldTokenBalanceUSD);
+          pool.userTotalEarnYieldOn =
+            pool.userTotalEarnYieldOn.plus(earnYieldOn);
+          pool.userTotalEarnYieldOnUSD = pool.userTotalEarnYieldOnUSD.plus(
+            earnYieldOn.times(stablecoinPrice)
+          );
+          pool.userTotalYieldEarned =
+            pool.userTotalYieldEarned.plus(yieldEarned);
+          pool.userTotalYieldEarnedUSD = pool.userTotalYieldEarnedUSD.plus(
+            yieldEarned.times(stablecoinPrice)
+          );
+          pool.userTotalRefundedAmount =
+            pool.userTotalRefundedAmount.plus(refundedAmount);
+          pool.userTotalRefundedAmountUSD =
+            pool.userTotalRefundedAmountUSD.plus(
+              refundedAmount.times(stablecoinPrice)
+            );
+          pool.userTotalMPHRewardsEarned =
+            pool.userTotalMPHRewardsEarned.plus(mphEarned);
+          pool.userTotalMPHRewardsEarnedUSD =
+            pool.userTotalMPHRewardsEarnedUSD.plus(
+              mphEarned.times(this.mphPriceUSD)
+            );
 
-      if (dpools) {
-        const allPoolList = new Array<DPool>(0);
-        Promise.all(dpools.map(async pool => {
+          // update user totals
+          totalYieldTokenBalanceUSD =
+            totalYieldTokenBalanceUSD.plus(yieldTokenBalanceUSD);
+          totalDepositEarningYield = totalDepositEarningYield.plus(
+            earnYieldOn.times(stablecoinPrice)
+          );
+          totalYieldEarnedUSD = totalYieldEarnedUSD.plus(
+            yieldEarned.times(stablecoinPrice)
+          );
+          totalMPHEarned = totalMPHEarned.plus(mphEarned);
+        })
+      ).then(() => {
+        this.funderPools = funderPools;
+        this.totalYieldTokenBalanceUSD = totalYieldTokenBalanceUSD;
+        this.totalDepositEarningYield = totalDepositEarningYield;
+        this.totalYieldEarnedUSD = totalYieldEarnedUSD;
+        this.totalMPHEarned = totalMPHEarned;
+      });
+    }
+
+    if (dpools) {
+      const allPoolList = new Array<DPool>(0);
+      Promise.all(
+        dpools.map(async (pool) => {
           const poolInfo = this.contract.getPoolInfoFromAddress(pool.address);
 
           if (!poolInfo) {
             return;
           }
 
-          const stablecoin = poolInfo.stablecoin.toLowerCase()
+          const stablecoin = poolInfo.stablecoin.toLowerCase();
           let stablecoinPrice = stablecoinPriceCache[stablecoin];
           if (!stablecoinPrice) {
             stablecoinPrice = await this.helpers.getTokenPriceUSD(stablecoin);
             stablecoinPriceCache[stablecoin] = stablecoinPrice;
           }
 
-          // get MPH reward amount
-          const mphRewardPerTokenPerSecond = new BigNumber(pool.mphFunderRewardMultiplier);
-
-          const poolContract = this.contract.getPool(poolInfo.name);
-          const latestFundedDeposit = +(await poolContract.methods.latestFundedDepositID().call());
-          const latestDeposit = pool.latestDeposit.length ? +pool.latestDeposit[0].nftID : 0;
           const dpoolObj: DPool = {
             name: poolInfo.name,
             address: poolInfo.address,
@@ -274,115 +381,221 @@ export class BondsComponent implements OnInit {
             stablecoinSymbol: poolInfo.stablecoinSymbol,
             stablecoinDecimals: poolInfo.stablecoinDecimals,
             iconPath: poolInfo.iconPath,
-            surplus: new BigNumber(pool.surplus),
-            oneYearInterestRate: new BigNumber(pool.oneYearInterestRate).times(100),
-            latestFundedDeposit: latestFundedDeposit,
-            latestDeposit: latestDeposit,
-            unfundedDepositAmount: new BigNumber(pool.unfundedDepositAmount),
-            mphRewardPerTokenPerSecond: mphRewardPerTokenPerSecond,
-            oracleInterestRate: new BigNumber(pool.oracleInterestRate).times(this.constants.YEAR_IN_SEC).times(100)
+            oneYearInterestRate: new BigNumber(pool.oneYearInterestRate).times(
+              100
+            ),
+            oracleInterestRate: new BigNumber(pool.oracleInterestRate),
+            poolFunderRewardMultiplier: new BigNumber(
+              pool.poolFunderRewardMultiplier
+            ),
           };
           allPoolList.push(dpoolObj);
-        })).then(() => {
-          this.allPoolList = allPoolList;
-          this.selectPool(0);
+        })
+      ).then(() => {
+        allPoolList.sort((a, b) => {
+          const aName = a.name;
+          const bName = b.name;
+          if (aName > bName) {
+            return 1;
+          }
+          if (aName < bName) {
+            return -1;
+          }
+          return 0;
         });
-      }
+        this.allPoolList = allPoolList;
+        this.selectPool(0);
+      });
     }
   }
 
   resetData(resetUser: boolean, resetGlobal: boolean): void {
     if (resetUser) {
-      this.totalDeficitFundedUSD = new BigNumber(0);
-      this.totalCurrentDepositUSD = new BigNumber(0);
-      this.totalInterestUSD = new BigNumber(0);
-      this.totalMPHEarned = new BigNumber(0);
       this.funderPools = [];
-
+      this.totalYieldTokenBalanceUSD = new BigNumber(0);
+      this.totalDepositEarningYield = new BigNumber(0);
+      this.totalYieldEarnedUSD = new BigNumber(0);
+      this.totalMPHEarned = new BigNumber(0);
     }
 
     if (resetGlobal) {
-      this.floatingRatePrediction = new BigNumber(0);
       this.allPoolList = [];
-      this.numDepositsToFund = 'All';
-      this.numFundableDeposits = 0;
       this.fundableDeposits = [];
-      this.debtToFundToken = new BigNumber(0);
-      this.debtToFundUSD = new BigNumber(0);
-      this.amountToEarnOnToken = new BigNumber(0);
-      this.amountToEarnOnUSD = new BigNumber(0);
-      this.mphRewardAmount = new BigNumber(0);
-      this.estimatedProfitToken = new BigNumber(0);
-      this.estimatedProfitUSD = new BigNumber(0);
-      this.estimatedROI = new BigNumber(0);
       this.loadingCalculator = true;
+      this.floatingRatePrediction = new BigNumber(0);
       this.mphPriceUSD = new BigNumber(0);
-      this.mphROI = new BigNumber(0);
-      this.averageMaturationTime = new BigNumber(0);
-      this.medianMaturationTime = new BigNumber(0);
-      this.depositListIsCollapsed = true;
     }
   }
 
-  openBondDetailsModal(selectedFunderPool, selectedFunding) {
-    const modalRef = this.modalService.open(ModalBondDetailsComponent, { windowClass: 'fullscreen' });
-    modalRef.componentInstance.funderPool = selectedFunderPool;
-    modalRef.componentInstance.funding = selectedFunding;
-    modalRef.componentInstance.mphPriceUSD = this.mphPriceUSD;
-  }
-
-  selectPool(poolIdx: number) {
+  async selectPool(poolIdx: number) {
     this.selectedPool = this.allPoolList[poolIdx];
-    this.floatingRatePrediction = this.selectedPool.oneYearInterestRate.times(2);
-    this.numFundableDeposits = Math.min(this.selectedPool.latestDeposit - this.selectedPool.latestFundedDeposit, 20);
 
-    const poolID = this.selectedPool.address.toLowerCase();
+    const poolID = this.selectedPool.address;
+    const now = Math.floor(Date.now() / 1e3);
+
+    const stablecoinPrice = await this.helpers.getTokenPriceUSD(
+      this.selectedPool.stablecoin
+    );
+
     const queryString = gql`
       {
-        dpool(id: "${poolID}") {
+        dpools(
+          where: {
+            id_in: ["${poolID}", "${poolID.toLowerCase()}"]
+          }
+        ) {
           id
+          poolFunderRewardMultiplier
           moneyMarketIncomeIndex
-          deposits(where: { nftID_gt: ${this.selectedPool.latestFundedDeposit} }, orderBy: nftID) {
+          deposits(
+            where: {
+              amount_gt: "${this.constants.DUST_THRESHOLD}",
+              maturationTimestamp_gt: "${now}"
+            }
+          ) {
+            id
             nftID
             amount
-            active
+            virtualTokenTotalSupply
+            interestRate
+            feeRate
             maturationTimestamp
-            interestEarned
-            initialMoneyMarketIncomeIndex
+            funding {
+              id
+              active
+              fundedDeficitAmount
+              totalSupply
+              principalPerToken
+            }
+            averageRecordedIncomeIndex
           }
         }
       }
     `;
-    this.apollo.query<FundableDepositsQuery>({
-      query: queryString
-    }).subscribe((x) => {
+    request(
+      this.constants.GRAPHQL_ENDPOINT[this.wallet.networkID],
+      queryString
+    ).then(async (data: FundableDepositsQuery) => {
       const fundableDeposits = [];
-      const moneyMarketIncomeIndex = new BigNumber(x.data.dpool.moneyMarketIncomeIndex);
-      for (const deposit of x.data.dpool.deposits) {
-        const surplus = moneyMarketIncomeIndex.div(deposit.initialMoneyMarketIncomeIndex).minus(1).times(deposit.amount).minus(deposit.interestEarned);
-        const parsedDeposit: Deposit = {
-          nftID: deposit.nftID,
-          amount: new BigNumber(deposit.amount),
-          active: deposit.active,
-          maturationTimestamp: deposit.maturationTimestamp,
-          interestEarned: new BigNumber(deposit.interestEarned),
-          surplus: surplus
+      const pool = this.contract.getPool(this.selectedPool.name);
+
+      for (const deposit of data.dpools[0].deposits) {
+        const virtualTokenTotalSupply = new BigNumber(
+          deposit.virtualTokenTotalSupply
+        );
+        const interestRate = new BigNumber(deposit.interestRate);
+        const feeRate = new BigNumber(deposit.feeRate);
+
+        const totalPrincipal = virtualTokenTotalSupply
+          .div(interestRate.plus(1))
+          .times(interestRate.plus(feeRate).plus(1));
+
+        const depositAmount = new BigNumber(deposit.amount);
+
+        // compute fundable deposit fund amount upper bound
+        let bound: BigNumber;
+        let unfundedDepositAmount: BigNumber;
+        const stablecoinPrecision = Math.pow(
+          10,
+          this.selectedPool.stablecoinDecimals
+        );
+        if (deposit.funding) {
+          const supply = deposit.funding.totalSupply;
+          const principalPerToken = deposit.funding.principalPerToken;
+          const unfundedPrincipalAmount = totalPrincipal.minus(
+            supply * principalPerToken
+          );
+          unfundedDepositAmount = unfundedPrincipalAmount
+            .div(totalPrincipal)
+            .times(deposit.amount);
+          if (unfundedDepositAmount.lt(this.constants.DUST_THRESHOLD)) {
+            unfundedDepositAmount = new BigNumber(0);
+          }
+          bound = new BigNumber(
+            await pool.methods
+              .calculateInterestAmount(
+                this.helpers.processWeb3Number(
+                  unfundedDepositAmount.times(stablecoinPrecision)
+                ),
+                this.helpers.processWeb3Number(
+                  +deposit.maturationTimestamp - now
+                )
+              )
+              .call()
+          ).div(stablecoinPrecision);
+        } else {
+          bound = new BigNumber(
+            await pool.methods
+              .calculateInterestAmount(
+                this.helpers.processWeb3Number(
+                  new BigNumber(deposit.amount).times(stablecoinPrecision)
+                ),
+                this.helpers.processWeb3Number(
+                  +deposit.maturationTimestamp - now
+                )
+              )
+              .call()
+          ).div(stablecoinPrecision);
         }
-        fundableDeposits.push(parsedDeposit);
+
+        // deposit hasn't been funded yet
+        // @dev yield tokens available will equal the total principal of the deposit
+        if (
+          deposit.funding === null &&
+          bound.gt(this.constants.DUST_THRESHOLD)
+        ) {
+          const parsedDeposit: FundableDeposit = {
+            id: deposit.id,
+            pool: this.selectedPool,
+            maturationTimestamp: +deposit.maturationTimestamp,
+            unfundedDepositAmount: depositAmount,
+            unfundedDepositAmountUSD: depositAmount.times(stablecoinPrice),
+            yieldTokensAvailable: totalPrincipal,
+            yieldTokensAvailableUSD: bound.times(stablecoinPrice),
+            estimatedAPR: new BigNumber(0),
+            mphRewardsAPR: new BigNumber(0),
+          };
+          fundableDeposits.push(parsedDeposit);
+        }
+        // deposit has been partially funded
+        else if (bound.gt(this.constants.DUST_THRESHOLD)) {
+          const supply = deposit.funding.totalSupply;
+          const principalPerToken = deposit.funding.principalPerToken;
+          const unfundedPrincipalAmount = totalPrincipal.minus(
+            supply * principalPerToken
+          );
+          const yieldTokensAvailable =
+            unfundedPrincipalAmount.div(principalPerToken);
+
+          const parsedDeposit: FundableDeposit = {
+            id: deposit.id,
+            pool: this.selectedPool,
+            maturationTimestamp: +deposit.maturationTimestamp,
+            unfundedDepositAmount: unfundedDepositAmount,
+            unfundedDepositAmountUSD:
+              unfundedDepositAmount.times(stablecoinPrice),
+            yieldTokensAvailable: yieldTokensAvailable,
+            yieldTokensAvailableUSD: bound.times(stablecoinPrice),
+            estimatedAPR: new BigNumber(0),
+            mphRewardsAPR: new BigNumber(0),
+          };
+          fundableDeposits.push(parsedDeposit);
+        }
       }
+      // sort deposits by maturation timestamp
+      fundableDeposits.sort((a, b) => {
+        return a.maturationTimestamp - b.maturationTimestamp;
+      });
+
       this.fundableDeposits = fundableDeposits;
-
-      this.updateNumDepositsToFund(this.numFundableDeposits + 1);
+      this.floatingRatePrediction = this.helpers
+        .parseInterestRate(
+          this.selectedPool.oracleInterestRate,
+          this.constants.YEAR_IN_SEC
+        )
+        .times(100);
+      this.updateEstimatedROI();
     });
-  }
-
-
-
-  selectedPoolHasDebt(): boolean {
-    if (!this.selectedPool) {
-      return false;
-    }
-    return this.selectedPool.surplus.lt(0) && this.numFundableDeposits > 0;
   }
 
   updateFloatingRatePrediction(newPrediction: number) {
@@ -390,195 +603,130 @@ export class BondsComponent implements OnInit {
     this.updateEstimatedROI();
   }
 
-  async updateNumDepositsToFund(newNum: number) {
-    const readonlyWeb3 = this.wallet.readonlyWeb3();
-    const poolContract = this.contract.getPool(this.selectedPool.name, readonlyWeb3);
-    if (newNum >= this.numFundableDeposits) {
-      // fund all deposits
-      this.numDepositsToFund = 'All';
-      this.debtToFundToken = this.selectedPool.surplus.times(-1);
-      this.amountToEarnOnToken = this.selectedPool.unfundedDepositAmount;
-    } else {
-      this.numDepositsToFund = newNum.toString();
-      let debtToFundToken = new BigNumber(0);
-      let amountToEarnOnToken = new BigNumber(0);
-      for (const deposit of this.fundableDeposits.slice(0, newNum)) {
-        if (deposit.active) {
-          debtToFundToken = debtToFundToken.plus(deposit.surplus.times(-1));
-          amountToEarnOnToken = amountToEarnOnToken.plus(deposit.amount);
-        } else {
-          const depositObj = await poolContract.methods.getDeposit(deposit.nftID).call();
-          const finalSurplus = new BigNumber(depositObj.finalSurplusAmount).times(depositObj.finalSurplusIsNegative ? -1 : 1).div(Math.pow(10, this.selectedPool.stablecoinDecimals));
-          debtToFundToken = debtToFundToken.plus(finalSurplus.times(-1));
-        }
-      }
-      this.debtToFundToken = debtToFundToken;
-      this.amountToEarnOnToken = amountToEarnOnToken;
-    }
-    const stablecoinPrice = await this.helpers.getTokenPriceUSD(this.selectedPool.stablecoin);
-    this.debtToFundUSD = this.debtToFundToken.times(stablecoinPrice);
-    this.amountToEarnOnUSD = this.amountToEarnOnToken.times(stablecoinPrice);
-
-    // compute weighted average maturation time and MPH reward amount
-    const deposits = newNum >= this.numFundableDeposits ? this.fundableDeposits : this.fundableDeposits.slice(0, newNum);
-    let totalMaturationTime = new BigNumber(0);
-    let numDepositsWithDebt = 0;
-    let mphRewardAmount = new BigNumber(0);
-    const now = Math.floor(Date.now() / 1e3);
-    for (const deposit of deposits) {
-      const timeTillMaturation = deposit.maturationTimestamp - now;
-      if (!deposit.active || timeTillMaturation < 0) continue;
-      totalMaturationTime = totalMaturationTime.plus(timeTillMaturation);
-      mphRewardAmount = mphRewardAmount.plus(this.selectedPool.mphRewardPerTokenPerSecond.times(deposit.amount).times(timeTillMaturation));
-      numDepositsWithDebt += 1;
-    }
-    this.averageMaturationTime = numDepositsWithDebt == 0 ? new BigNumber(0) : totalMaturationTime.div(numDepositsWithDebt).div(this.constants.DAY_IN_SEC);
-    this.mphRewardAmount = mphRewardAmount;
-    this.mphROI = this.mphRewardAmount.times(this.mphPriceUSD).div(this.debtToFundUSD).times(100);
-    if (this.mphROI.isNaN()) {
-      this.mphROI = new BigNumber(0);
-    }
-
-
-    // compute median maturation time
-    const median = (values) => {
-      if (values.length === 0) return 0;
-
-      values.sort(function (a, b) {
-        return a - b;
-      });
-
-      var half = Math.floor(values.length / 2);
-
-      if (values.length % 2)
-        return values[half];
-
-      return (values[half - 1] + values[half]) / 2.0;
-    };
-    this.medianMaturationTime = new BigNumber(median(
-      deposits
-        .filter(x => x.active && (x.maturationTimestamp - now > 0))
-        .map(x => x.maturationTimestamp - now)
-    )).div(this.constants.DAY_IN_SEC);
-
-    this.updateEstimatedROI();
-  }
-
   async updateEstimatedROI() {
-    // compute estimated ROI
     const estimatedFloatingRate = this.floatingRatePrediction.div(100);
-    let estimatedInterest = new BigNumber(0);
+    const mphFunderRewardMultiplier = new BigNumber(
+      this.selectedPool.poolFunderRewardMultiplier
+    );
     const now = Date.now() / 1e3;
-    const numDepositsToFund = isNaN(+this.numDepositsToFund) ? this.fundableDeposits.length : +this.numDepositsToFund;
-    for (const deposit of this.fundableDeposits.slice(0, numDepositsToFund)) {
-      if (!deposit.active || deposit.maturationTimestamp < now) continue;
-      const depositInterest = deposit.amount.times(estimatedFloatingRate).times(deposit.maturationTimestamp - now).div(this.constants.YEAR_IN_SEC);
-      estimatedInterest = estimatedInterest.plus(depositInterest);
+
+    for (const deposit of this.fundableDeposits) {
+      // calculate APR
+      const debtToFund = deposit.yieldTokensAvailableUSD;
+      const estimatedInterest = deposit.unfundedDepositAmountUSD
+        .times(estimatedFloatingRate)
+        .times(deposit.maturationTimestamp - now)
+        .div(this.constants.YEAR_IN_SEC);
+      const estimatedProfit = estimatedInterest.minus(debtToFund);
+      const estimatedAPR = estimatedProfit.div(debtToFund).times(100);
+      deposit.estimatedAPR = estimatedAPR;
+
+      // calculate MPH APR
+      const estimatedInterestToken = deposit.unfundedDepositAmount
+        .times(Math.pow(10, this.selectedPool.stablecoinDecimals))
+        .times(estimatedFloatingRate)
+        .times(deposit.maturationTimestamp - now)
+        .div(this.constants.YEAR_IN_SEC);
+      const mphReward = estimatedInterestToken
+        .times(mphFunderRewardMultiplier)
+        .div(this.constants.PRECISION);
+      const mphRewardUSD = mphReward.times(this.mphPriceUSD);
+      const mphRewardAPR = mphRewardUSD.div(debtToFund).times(100);
+      deposit.mphRewardsAPR = mphRewardAPR;
     }
-    this.estimatedProfitToken = estimatedInterest.minus(this.debtToFundToken);
-    this.estimatedProfitUSD = this.estimatedProfitToken.times(await this.helpers.getTokenPriceUSD(this.selectedPool.stablecoin.toLowerCase()));
-    this.estimatedROI = this.estimatedProfitToken.div(this.debtToFundToken).times(100);
-
     this.loadingCalculator = false;
-  }
-
-  getDepositsToFundByMaturationTime() {
-    const now = Math.floor(Date.now() / 1e3);
-    const newNum = this.numDepositsToFund === 'All' ? this.numFundableDeposits : +this.numDepositsToFund;
-    const deposits = newNum >= this.numFundableDeposits ? this.fundableDeposits : this.fundableDeposits.slice(0, newNum);
-    return deposits
-      .filter(x => x.active && (x.maturationTimestamp - now > 0))
-      .sort((a, b) => {
-        return a.maturationTimestamp - b.maturationTimestamp;
-      });
   }
 
   timestampToDateString(timestampSec: number): string {
     return new Date(timestampSec * 1e3).toLocaleDateString();
   }
 
-  buyBond() {
-    const pool = this.contract.getPool(this.selectedPool.name);
-    const stablecoin = this.contract.getPoolStablecoin(this.selectedPool.name);
-    const stablecoinPrecision = Math.pow(10, this.selectedPool.stablecoinDecimals);
-    const debtToFund = this.helpers.processWeb3Number(this.debtToFundToken.times(stablecoinPrecision));
-    let func;
-    if (this.numDepositsToFund === 'All') {
-      // Fund all deposits
-      func = pool.methods.fundAll();
-    } else {
-      // Fund a selection of deposits
-      func = pool.methods.fundMultiple(this.selectedPool.latestFundedDeposit + (+this.numDepositsToFund));
-    }
-    this.wallet.sendTxWithToken(func, stablecoin, this.selectedPool.address, debtToFund, () => { }, () => { }, (error) => { this.wallet.displayGenericError(error) })
+  buyYieldTokens(deposit: FundableDeposit) {
+    const modalRef = this.modalService.open(ModalBuyYieldTokenComponent, {
+      windowClass: 'fullscreen',
+    });
+    modalRef.componentInstance.deposit = deposit;
+  }
+
+  openWithdrawYieldTokenInterestModal(
+    poolInfo: PoolInfo,
+    fundedDeposit: FundedDeposit
+  ) {
+    const modalRef = this.modalService.open(
+      ModalWithdrawYieldTokenInterestComponent,
+      {
+        windowClass: 'fullscreen',
+      }
+    );
+    modalRef.componentInstance.poolInfo = poolInfo;
+    modalRef.componentInstance.fundedDeposit = fundedDeposit;
+    modalRef.componentInstance.mphPriceUSD = this.mphPriceUSD;
   }
 
   canContinue() {
-    return this.wallet.connected && this.selectedPoolHasDebt() && this.debtToFundToken.gt(0);
+    return this.wallet.connected;
+  }
+
+  get estimatedCurrentFloatingInterestRate(): BigNumber {
+    if (!this.selectedPool) {
+      return new BigNumber(0);
+    }
+    return this.helpers
+      .parseInterestRate(
+        this.selectedPool.oracleInterestRate,
+        this.constants.YEAR_IN_SEC
+      )
+      .times(100);
+  }
+
+  get hasDebt(): boolean {
+    return this.fundableDeposits.length > 0;
   }
 }
 
 interface QueryResult {
   funder: {
-    totalMPHEarned: number;
-    pools: {
-      address: string;
-      fundings: {
-        id: number;
-        fromDepositID: number;
-        toDepositID: number;
-        pool: {
-          address: string;
-          oracleInterestRate: number;
-          moneyMarketIncomeIndex: number;
-          mphFunderRewardMultiplier: number;
-        };
-        nftID: number;
-        recordedFundedDepositAmount: number;
-        recordedMoneyMarketIncomeIndex: number;
-        initialFundedDepositAmount: number;
-        fundedDeficitAmount: number;
-        totalInterestEarned: number;
-        mphRewardEarned: number;
-        refundAmount: number;
-        creationTimestamp: number;
-      }[];
-    }[];
-    totalInterestByPool: {
+    address: string;
+    fundings: {
+      nftID: string;
+      totalSupply: string;
+      principalPerToken: string;
+      totalRefundEarned: string;
       pool: {
-        id: string;
-        stablecoin: string;
+        address: string;
+        poolFunderRewardMultiplier: string;
       };
-      totalDeficitFunded: number;
-      totalRecordedFundedDepositAmount: number;
-      totalInterestEarned: number;
+      deposit: {
+        maturationTimestamp: string;
+        interestRate: string;
+        feeRate: string;
+      };
     }[];
   };
   dpools: {
     id: string;
     address: string;
-    surplus: number;
-    unfundedDepositAmount: number;
-    oneYearInterestRate: number;
-    oracleInterestRate: number;
-    mphFunderRewardMultiplier: number;
-    latestDeposit: {
-      nftID: number;
-    }[];
+    oneYearInterestRate: string;
+    oracleInterestRate: string;
+    poolFunderRewardMultiplier: string;
   }[];
 }
 
 interface FundableDepositsQuery {
-  dpool: {
+  dpools: {
     id: string;
-    moneyMarketIncomeIndex: number;
+    poolFunderRewardMultiplier: string;
+    moneyMarketIncomeIndex: string;
     deposits: {
-      nftID: number;
-      amount: number;
-      active: boolean;
-      maturationTimestamp: number;
-      interestEarned: number;
-      initialMoneyMarketIncomeIndex: number;
+      id: string;
+      nftID: string;
+      amount: string;
+      virtualTokenTotalSupply: string;
+      interestRate: string;
+      feeRate: string;
+      maturationTimestamp: string;
+      funding: Funding;
+      averageRecordedIncomeIndex: string;
     }[];
   };
 }

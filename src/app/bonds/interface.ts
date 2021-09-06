@@ -1,42 +1,58 @@
-import BigNumber from "bignumber.js";
-import { PoolInfo } from "../contract.service";
+import BigNumber from 'bignumber.js';
+import { PoolInfo } from '../contract.service';
+import { Timer } from '../timer';
 
 export interface FunderPool {
   poolInfo: PoolInfo;
-  fundings: Funding[];
+  fundings: FundedDeposit[];
+  userTotalYieldTokenBalance: BigNumber;
+  userTotalYieldTokenBalanceUSD: BigNumber;
+  userTotalEarnYieldOn: BigNumber;
+  userTotalEarnYieldOnUSD: BigNumber;
+  userTotalYieldEarned: BigNumber;
+  userTotalYieldEarnedUSD: BigNumber;
+  userTotalRefundedAmount: BigNumber;
+  userTotalRefundedAmountUSD: BigNumber;
+  userTotalMPHRewardsEarned: BigNumber;
+  userTotalMPHRewardsEarnedUSD: BigNumber;
 }
 
 export interface Funding {
   id: number;
-  pool: {
-    address: string;
-    oracleInterestRate: BigNumber;
-    moneyMarketIncomeIndex: BigNumber;
-    mphFunderRewardMultiplier: BigNumber;
-  };
-  fromDepositID: number;
-  toDepositID: number;
-  nftID: number;
-  deficitToken: BigNumber;
-  deficitUSD: BigNumber;
-  currentDepositToken: BigNumber;
-  currentDepositUSD: BigNumber;
-  interestEarnedToken: BigNumber;
-  interestEarnedUSD: BigNumber;
-  mphRewardEarned: BigNumber;
-  refundAmountToken: BigNumber;
-  refundAmountUSD: BigNumber;
-  recordedMoneyMarketIncomeIndex: BigNumber;
-  creationTimestamp: number;
+  active: boolean;
+  totalSupply: number;
+  fundedDeficitAmount: number;
+  principalPerToken: number;
 }
 
-export interface Deposit {
-  nftID: number;
-  amount: BigNumber;
-  active: boolean;
+export interface FundedDeposit {
+  yieldToken: any;
+  fundingID: number;
+  stablecoinPrice: number;
+  funderAccruedInterest: BigNumber;
   maturationTimestamp: number;
-  interestEarned: BigNumber;
-  surplus: BigNumber;
+  yieldTokenBalance: BigNumber;
+  yieldTokenBalanceUSD: BigNumber;
+  earnYieldOn: BigNumber;
+  earnYieldOnUSD: BigNumber;
+  yieldEarned: BigNumber;
+  yieldEarnedUSD: BigNumber;
+  refundedAmount: BigNumber;
+  refundedAmountUSD: BigNumber;
+  mphRewardsEarned: BigNumber;
+  mphRewardsEarnedUSD: BigNumber;
+}
+
+export interface FundableDeposit {
+  id: string;
+  pool: DPool;
+  maturationTimestamp: number;
+  unfundedDepositAmount: BigNumber;
+  unfundedDepositAmountUSD: BigNumber;
+  yieldTokensAvailable: BigNumber;
+  yieldTokensAvailableUSD: BigNumber;
+  estimatedAPR: BigNumber;
+  mphRewardsAPR: BigNumber;
 }
 
 export interface DPool {
@@ -47,11 +63,7 @@ export interface DPool {
   stablecoinSymbol: string;
   stablecoinDecimals: number;
   iconPath: string;
-  latestFundedDeposit: number;
-  latestDeposit: number;
-  surplus: BigNumber;
   oneYearInterestRate: BigNumber;
-  unfundedDepositAmount: BigNumber;
-  mphRewardPerTokenPerSecond: BigNumber;
   oracleInterestRate: BigNumber;
+  poolFunderRewardMultiplier: BigNumber;
 }

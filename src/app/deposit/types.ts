@@ -1,5 +1,5 @@
 import BigNumber from 'bignumber.js';
-import { PoolInfo } from '../contract.service';
+import { PoolInfo, ZeroCouponBondInfo } from '../contract.service';
 import { Timer } from '../timer';
 
 export interface DPool {
@@ -10,19 +10,22 @@ export interface DPool {
   iconPath: string;
   totalDepositToken: BigNumber;
   totalDepositUSD: BigNumber;
-  oneYearInterestRate: BigNumber;
+  maxAPY: BigNumber;
   mphAPY: BigNumber;
-  tempMPHAPY: BigNumber;
+  // totalUserDepositsToken: BigNumber;
+  // totalUserDepositsUSD: BigNumber;
+  mphDepositorRewardMintMultiplier: BigNumber;
 }
 
 export interface UserPool {
   poolInfo: PoolInfo;
   deposits: UserDeposit[];
+  totalUserDepositsToken: BigNumber;
+  totalUserDepositsUSD: BigNumber;
 }
 
 export interface UserDeposit {
   nftID: number;
-  fundingID: number;
   locked: boolean;
   amountToken: BigNumber;
   amountUSD: BigNumber;
@@ -30,8 +33,30 @@ export interface UserDeposit {
   countdownTimer: Timer;
   interestEarnedToken: BigNumber;
   interestEarnedUSD: BigNumber;
-  mintMPHAmount: BigNumber;
   realMPHReward: BigNumber;
   mphAPY: BigNumber;
-  tempMPHAPY: BigNumber;
+  virtualTokenTotalSupply: BigNumber;
+  vest: Vest;
+  depositLength: number;
+  interestRate: BigNumber;
+  maturationTimestamp: number;
+}
+
+export interface UserZCBPool {
+  zcbPoolInfo: ZeroCouponBondInfo;
+  poolInfo: PoolInfo;
+  amountToken: BigNumber;
+  amountUSD: BigNumber;
+  maturation: string;
+  locked: boolean;
+}
+
+// @dev vest interface for v3
+export interface Vest {
+  nftID: number;
+  lastUpdateTimestamp: number;
+  accumulatedAmount: BigNumber;
+  withdrawnAmount: BigNumber;
+  vestAmountPerStablecoinPerSecond: BigNumber;
+  totalExpectedMPHAmount: BigNumber;
 }

@@ -1,0 +1,21 @@
+<div *ngIf="lineChartData" class="card mb-4 mb-lg-0">
+  <div class="card-body">
+    <h5 class="text-uppercase text-center">
+      Fixed-rate yield
+      <i
+        class="fe fe-info ml-1 align-bottom"
+        placement="top"
+        ngbTooltip="The fixed-rate yield (%) offered on 365-day deposits before accounting for protocol fees. Shorter deposits will receive a higher fixed-rate yield."
+      ></i>
+    </h5>
+    <canvas
+      baseChart
+      [datasets]="lineChartData"
+      [labels]="lineChartLabels"
+      [options]="lineChartOptions"
+      [legend]="lineChartLegend"
+      [chartType]="lineChartType"
+    >
+    </canvas>
+  </div>
+</div>

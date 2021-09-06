@@ -1,8 +1,6 @@
 import { Component, OnInit } from '@angular/core';
-import { ApolloQueryResult } from '@apollo/client/core';
-import { Apollo } from 'apollo-angular';
 import BigNumber from 'bignumber.js';
-import gql from 'graphql-tag';
+import { request, gql } from 'graphql-request';
 import { ConstantsService } from '../constants.service';
 import { ContractService } from '../contract.service';
 import { HelpersService } from '../helpers.service';
@@ -11,7 +9,7 @@ import { WalletService } from '../wallet.service';
 @Component({
   selector: 'app-stats',
   templateUrl: './stats.component.html',
-  styleUrls: ['./stats.component.css']
+  styleUrls: ['./stats.component.css'],
 })
 export class StatsComponent implements OnInit {
   mphTotalSupply: BigNumber;
@@ -23,7 +21,6 @@ export class StatsComponent implements OnInit {
   mphCirculatingSupply: BigNumber;
 
   constructor(
-    private apollo: Apollo,
     public helpers: HelpersService,
     public contract: ContractService,
     public constants: ConstantsService,
@@ -38,6 +35,10 @@ export class StatsComponent implements OnInit {
       this.resetData();
       this.loadData();
     });
+    this.wallet.chainChangedEvent.subscribe((networkID) => {
+      this.resetData();
+      this.loadData();
+    });
   }
 
   async loadData() {
@@ -47,82 +48,107 @@ export class StatsComponent implements OnInit {
           id
           address
           stablecoin
-          totalActiveDeposit
-          totalInterestPaid
+          totalDeposit
         }
-        mph(id: "0") {
-          id
-          totalHistoricalReward
-          rewardPerMPHPerSecond
+        globalStats(id: "0") {
+          xMPHRewardDistributed
         }
       }
     `;
-    this.apollo.query<QueryResult>({
-      query: queryString
-    }).subscribe((x) => this.handleData(x));
+    request(
+      this.constants.GRAPHQL_ENDPOINT[this.wallet.networkID],
+      queryString
+    ).then((data: QueryResult) => this.handleData(data));
 
     this.helpers.getMPHPriceUSD().then((price) => {
       this.mphPriceUSD = price;
     });
 
-    const readonlyWeb3 = this.wallet.readonlyWeb3();
-    const mphToken = this.contract.getNamedContract('MPHToken', readonlyWeb3);
-    const rewards = this.contract.getNamedContract('Rewards', readonlyWeb3);
-    this.mphTotalSupply = new BigNumber(await mphToken.methods.totalSupply().call()).div(this.constants.PRECISION);
-    this.mphStakedPercentage = this.mphTotalSupply.isZero() ? new BigNumber(0) : new BigNumber(await rewards.methods.totalSupply().call()).div(this.constants.PRECISION).div(this.mphTotalSupply).times(100);
+    const mph = this.contract.getContract(
+      this.constants.MPH_ADDRESS[this.wallet.networkID],
+      `MPHToken`
+    );
+
+    const xmph = await this.contract.getContract(
+      this.constants.XMPH_ADDRESS[this.wallet.networkID],
+      `xMPH`
+    );
+
+    await mph.methods
+      .totalSupply()
+      .call()
+      .then((totalSupply) => {
+        this.mphTotalSupply = new BigNumber(totalSupply).div(
+          this.constants.PRECISION
+        );
+      });
+
+    mph.methods
+      .balanceOf(xmph.options.address)
+      .call()
+      .then((stakedBalance) => {
+        this.mphStakedPercentage = new BigNumber(stakedBalance)
+          .div(this.mphTotalSupply)
+          .div(this.constants.PRECISION)
+          .times(100);
+      });
 
     // compute circulating supply
     let mphCirculatingSupply = this.mphTotalSupply;
-    const getBalance = async address => {
-      return new BigNumber(await mphToken.methods.balanceOf(address).call()).div(this.constants.PRECISION);
-    }
+    const getBalance = async (address) => {
+      if (address !== '') {
+        return new BigNumber(await mph.methods.balanceOf(address).call()).div(
+          this.constants.PRECISION
+        );
+      } else {
+        return new BigNumber(0);
+      }
+    };
     const accountsToUpdate = [
-      this.contract.getNamedContractAddress('Farming'),
-      this.constants.GOV_TREASURY,
-      this.constants.DEV_WALLET,
-      this.constants.MPH_MERKLE_DISTRIBUTOR,
-      this.contract.getNamedContractAddress('Rewards'),
-      this.contract.getNamedContractAddress('Vesting')
+      this.constants.XMPH_ADDRESS[this.wallet.networkID],
+      this.constants.GOV_TREASURY[this.wallet.networkID],
+      this.constants.DEV_WALLET[this.wallet.networkID],
+      this.constants.MERKLE_DISTRIBUTOR[this.wallet.networkID],
     ];
-    const accountBalances = await Promise.all(accountsToUpdate.map(account => getBalance(account)));
+    const accountBalances = await Promise.all(
+      accountsToUpdate.map((account) => getBalance(account))
+    );
     for (const balance of accountBalances) {
       mphCirculatingSupply = mphCirculatingSupply.minus(balance);
     }
     this.mphCirculatingSupply = mphCirculatingSupply;
   }
 
-  async handleData(queryResult: ApolloQueryResult<QueryResult>) {
-    if (!queryResult.loading) {
-      const dpools = queryResult.data.dpools;
-      const mph = queryResult.data.mph;
+  async handleData(data: QueryResult) {
+    const dpools = data.dpools;
+    const rewards = data.globalStats;
 
-      if (dpools) {
-        let totalDepositUSD = new BigNumber(0);
-        let totalInterestUSD = new BigNumber(0);
-        let stablecoinPriceCache = {};
-        Promise.all(
-          dpools.map(async pool => {
-            let stablecoinPrice = stablecoinPriceCache[pool.stablecoin];
-            if (!stablecoinPrice) {
-              stablecoinPrice = await this.helpers.getTokenPriceUSD(pool.stablecoin);
-              stablecoinPriceCache[pool.stablecoin] = stablecoinPrice;
-            }
+    if (rewards) {
+      this.mphTotalHistoricalReward = new BigNumber(
+        rewards.xMPHRewardDistributed
+      );
+    }
 
-            const poolDepositUSD = new BigNumber(pool.totalActiveDeposit).times(stablecoinPrice);
-            const poolInfo = this.contract.getPoolInfoFromAddress(pool.address);
-            const poolInterestUSD = this.helpers.applyFeeToInterest(new BigNumber(pool.totalInterestPaid).times(stablecoinPrice), poolInfo);
-            totalDepositUSD = totalDepositUSD.plus(poolDepositUSD);
-            totalInterestUSD = totalInterestUSD.plus(poolInterestUSD);
-          })
-        ).then(() => {
-          this.totalDepositUSD = totalDepositUSD;
-          this.totalInterestUSD = totalInterestUSD;
-        });
-      }
-
-      if (mph) {
-        this.mphTotalHistoricalReward = new BigNumber(mph.totalHistoricalReward);
-      }
+    if (dpools) {
+      let totalDepositUSD = new BigNumber(0);
+      let stablecoinPriceCache = {};
+      Promise.all(
+        dpools.map(async (pool) => {
+          let stablecoinPrice = stablecoinPriceCache[pool.stablecoin];
+          if (!stablecoinPrice) {
+            stablecoinPrice = await this.helpers.getTokenPriceUSD(
+              pool.stablecoin
+            );
+            stablecoinPriceCache[pool.stablecoin] = stablecoinPrice;
+          }
+          const poolDepositUSD = new BigNumber(pool.totalDeposit).times(
+            stablecoinPrice
+          );
+          totalDepositUSD = totalDepositUSD.plus(poolDepositUSD);
+        })
+      ).then(() => {
+        this.totalDepositUSD = totalDepositUSD;
+      });
     }
   }
 
@@ -135,7 +161,6 @@ export class StatsComponent implements OnInit {
     this.mphPriceUSD = new BigNumber(0);
     this.mphCirculatingSupply = new BigNumber(0);
   }
-
 }
 
 interface QueryResult {
@@ -143,12 +168,9 @@ interface QueryResult {
     id: string;
     address: string;
     stablecoin: string;
-    totalActiveDeposit: number;
-    totalInterestPaid: number;
+    totalDeposit: number;
   }[];
-  mph: {
-    id: string;
-    totalHistoricalReward: number;
-    rewardPerMPHPerSecond: number;
+  globalStats: {
+    xMPHRewardDistributed: string;
   };
 }

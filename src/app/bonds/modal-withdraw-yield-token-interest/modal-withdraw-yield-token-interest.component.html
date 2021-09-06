@@ -1,0 +1,154 @@
+<div class="modal-dialog modal-dialog-vertical" role="document">
+  <div class="modal-content">
+    <div class="modal-body pt-0 py-lg-0">
+      <div class="row no-gutters align-items-center">
+        <div class="col-auto">
+          <a
+            class="btn btn-link border-0 text-white pl-0"
+            data-dismiss="modal"
+            aria-label="Close"
+            (click)="activeModal.dismiss()"
+          >
+            <i class="fe fe-arrow-left h2 mb-0"></i>
+          </a>
+        </div>
+        <div class="col">
+          <h1 class="mb-0 h3">Claim interest earned + MPH rewards</h1>
+        </div>
+      </div>
+      <div class="row justify-content-center">
+        <div class="col-6 pt-0">
+          <div class="card mb-6">
+            <div class="card-body">
+              <div class="list-group list-group-flush list-group-activity mb-2">
+                <div class="list-group-item">
+                  <div class="row">
+                    <div class="col-auto">
+                      <div class="avatar avatar-sm">
+                        <div
+                          class="
+                            avatar-title
+                            font-size-lg
+                            bg-dark
+                            rounded-circle
+                            text-white
+                            border-gradient
+                          "
+                        >
+                          1
+                        </div>
+                      </div>
+                    </div>
+                    <div class="col ml-n2">
+                      <h6 class="header-pretitle mb-2">Accrued interest</h6>
+                      <h4 class="mb-1 glowing display-4">
+                        {{ fundedDeposit.funderAccruedInterest.toFormat(8) }}
+                        {{ poolInfo.stablecoinSymbol }}
+                      </h4>
+                      <div class="text-muted small mb-3">
+                        ${{
+                          fundedDeposit.funderAccruedInterest
+                            .times(fundedDeposit.stablecoinPrice)
+                            .toFormat(2)
+                        }}
+                      </div>
+                      <button
+                        class="btn btn-lg btn-bg-gradient"
+                        type="button"
+                        (click)="handleAccruedInterest()"
+                        [disabled]="!canContinue()"
+                      >
+                        Make accrued interest and MPH rewards claimable
+                      </button>
+                    </div>
+                  </div>
+                  <!-- / .row -->
+                </div>
+                <div class="list-group-item">
+                  <div class="row">
+                    <div class="col-auto text-center">
+                      <div class="avatar avatar-sm">
+                        <div
+                          class="
+                            avatar-title
+                            font-size-lg
+                            bg-dark
+                            rounded-circle
+                            text-white
+                            border-gradient
+                          "
+                        >
+                          2
+                        </div>
+                      </div>
+                    </div>
+                    <div class="col ml-n2">
+                      <h6 class="header-pretitle mb-2">Claimable interest</h6>
+                      <h4 class="mb-1 glowing display-4">
+                        {{ withdrawableInterestToken.toFormat(8) }}
+                        {{ poolInfo.stablecoinSymbol }}
+                      </h4>
+                      <div class="text-muted small mb-3">
+                        ${{ withdrawableInterestUSD.toFormat(2) }}
+                      </div>
+                      <button
+                        class="btn btn-lg btn-bg-gradient"
+                        type="button"
+                        (click)="withdrawInterest()"
+                        [disabled]="!canContinue()"
+                      >
+                        Claim Interest
+                      </button>
+                    </div>
+                  </div>
+                  <!-- / .row -->
+                </div>
+                <div class="list-group-item pb-0">
+                  <div class="row">
+                    <div class="col-auto text-center">
+                      <div class="avatar avatar-sm">
+                        <div
+                          class="
+                            avatar-title
+                            font-size-lg
+                            bg-dark
+                            rounded-circle
+                            text-white
+                            border-gradient
+                          "
+                        >
+                          3
+                        </div>
+                      </div>
+                    </div>
+                    <div class="col ml-n2">
+                      <h6 class="header-pretitle mb-2">
+                        Claimable MPH rewards
+                      </h6>
+                      <h4 class="mb-1 glowing display-4">
+                        {{ withdrawableMPHToken.toFormat(8) }}
+                        MPH
+                      </h4>
+                      <div class="text-muted small mb-3">
+                        ${{ withdrawableMPHUSD.toFormat(2) }}
+                      </div>
+                      <button
+                        class="btn btn-lg btn-bg-gradient"
+                        type="button"
+                        (click)="withdrawMPH()"
+                        [disabled]="!canContinue()"
+                      >
+                        Claim MPH
+                      </button>
+                    </div>
+                  </div>
+                  <!-- / .row -->
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
